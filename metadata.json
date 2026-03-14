@@ -1,0 +1,5 @@
+{
+  "name": "Smart Todo Manager",
+  "description": "A feature-rich todo management application with registration, editing, deletion, search, and notification features.",
+  "requestFramePermissions": ["notifications"]
+}
