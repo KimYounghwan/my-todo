@@ -15,9 +15,11 @@ import {
   X, 
   Calendar,
   AlertCircle,
-  Check
+  Check,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { supabase } from './supabaseClient';
 
 interface Todo {
   id: string;
@@ -34,10 +36,8 @@ interface Notification {
 }
 
 export default function App() {
-  const [todos, setTodos] = useState<Todo[]>(() => {
-    const saved = localStorage.getItem('todos');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [inputText, setInputText] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -46,10 +46,28 @@ export default function App() {
   const [editText, setEditText] = useState('');
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
-  // Persistence
+  // Fetch Todos from Supabase
   useEffect(() => {
-    localStorage.setItem('todos', JSON.stringify(todos));
-  }, [todos]);
+    fetchTodos();
+  }, []);
+
+  const fetchTodos = async () => {
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('todos')
+        .select('*')
+        .order('createdAt', { ascending: false });
+
+      if (error) throw error;
+      setTodos(data || []);
+    } catch (error: any) {
+      console.error('Error fetching todos:', error.message);
+      addNotification('데이터를 불러오는데 실패했습니다.', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Notification helper
   const addNotification = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -61,37 +79,78 @@ export default function App() {
   };
 
   // CRUD Operations
-  const addTodo = (e: React.FormEvent) => {
+  const addTodo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim()) {
       addNotification('할일 내용을 입력해주세요.', 'error');
       return;
     }
-    const newTodo: Todo = {
-      id: Math.random().toString(36).substring(2, 9),
+
+    const newTodo = {
       text: inputText,
       completed: false,
       createdAt: Date.now(),
-      dueDate: dueDate || undefined
+      dueDate: dueDate || null
     };
-    setTodos([newTodo, ...todos]);
-    setInputText('');
-    setDueDate('');
-    addNotification('할일이 등록되었습니다.', 'success');
+
+    try {
+      const { data, error } = await supabase
+        .from('todos')
+        .insert([newTodo])
+        .select();
+
+      if (error) throw error;
+      
+      if (data) {
+        setTodos([data[0], ...todos]);
+        setInputText('');
+        setDueDate('');
+        addNotification('할일이 등록되었습니다.', 'success');
+      }
+    } catch (error: any) {
+      addNotification('등록에 실패했습니다: ' + error.message, 'error');
+    }
   };
 
-  const deleteTodo = (id: string) => {
-    setTodos(todos.filter(todo => todo.id !== id));
-    addNotification('할일이 삭제되었습니다.', 'info');
+  const deleteTodo = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('todos')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      setTodos(todos.filter(todo => todo.id !== id));
+      addNotification('할일이 삭제되었습니다.', 'info');
+    } catch (error: any) {
+      addNotification('삭제에 실패했습니다.', 'error');
+    }
   };
 
-  const toggleTodo = (id: string) => {
-    setTodos(todos.map(todo => 
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
-    ));
-    const todo = todos.find(t => t.id === id);
-    if (todo && !todo.completed) {
-      addNotification('할일을 완료했습니다!', 'success');
+  const toggleTodo = async (id: string) => {
+    const todoToToggle = todos.find(t => t.id === id);
+    if (!todoToToggle) return;
+
+    const newStatus = !todoToToggle.completed;
+
+    try {
+      const { error } = await supabase
+        .from('todos')
+        .update({ completed: newStatus })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      setTodos(todos.map(todo => 
+        todo.id === id ? { ...todo, completed: newStatus } : todo
+      ));
+      
+      if (newStatus) {
+        addNotification('할일을 완료했습니다!', 'success');
+      }
+    } catch (error: any) {
+      addNotification('상태 변경에 실패했습니다.', 'error');
     }
   };
 
@@ -100,16 +159,28 @@ export default function App() {
     setEditText(todo.text);
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editText.trim()) {
       addNotification('내용을 입력해주세요.', 'error');
       return;
     }
-    setTodos(todos.map(todo => 
-      todo.id === editingId ? { ...todo, text: editText } : todo
-    ));
-    setEditingId(null);
-    addNotification('수정되었습니다.', 'success');
+
+    try {
+      const { error } = await supabase
+        .from('todos')
+        .update({ text: editText })
+        .eq('id', editingId);
+
+      if (error) throw error;
+
+      setTodos(todos.map(todo => 
+        todo.id === editingId ? { ...todo, text: editText } : todo
+      ));
+      setEditingId(null);
+      addNotification('수정되었습니다.', 'success');
+    } catch (error: any) {
+      addNotification('수정에 실패했습니다.', 'error');
+    }
   };
 
   // Search and Filter
@@ -207,75 +278,82 @@ export default function App() {
 
         {/* Todo List */}
         <div className="space-y-3">
-          <AnimatePresence mode="popLayout">
-            {filteredTodos.map((todo) => (
-              <motion.div
-                key={todo.id}
-                layout
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className={`group bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4 transition-all hover:shadow-md ${todo.completed ? 'bg-slate-50/50' : ''}`}
-              >
-                <button 
-                  onClick={() => toggleTodo(todo.id)}
-                  className={`flex-shrink-0 transition-colors ${todo.completed ? 'text-emerald-500' : 'text-slate-300 hover:text-indigo-400'}`}
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+              <Loader2 className="w-10 h-10 animate-spin mb-4" />
+              <p>데이터를 불러오는 중...</p>
+            </div>
+          ) : (
+            <AnimatePresence mode="popLayout">
+              {filteredTodos.map((todo) => (
+                <motion.div
+                  key={todo.id}
+                  layout
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className={`group bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4 transition-all hover:shadow-md ${todo.completed ? 'bg-slate-50/50' : ''}`}
                 >
-                  {todo.completed ? <CheckCircle2 className="w-6 h-6" /> : <Circle className="w-6 h-6" />}
-                </button>
-
-                <div className="flex-grow min-w-0">
-                  {editingId === todo.id ? (
-                    <div className="flex items-center gap-2">
-                      <input 
-                        autoFocus
-                        type="text"
-                        value={editText}
-                        onChange={(e) => setEditText(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      />
-                      <button onClick={saveEdit} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded">
-                        <Check className="w-5 h-5" />
-                      </button>
-                      <button onClick={() => setEditingId(null)} className="p-1 text-slate-400 hover:bg-slate-100 rounded">
-                        <X className="w-5 h-5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <p className={`text-base font-medium truncate ${todo.completed ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
-                        {todo.text}
-                      </p>
-                      {todo.dueDate && (
-                        <div className="flex items-center gap-1 mt-1 text-xs text-slate-400">
-                          <Calendar className="w-3 h-3" />
-                          <span>{todo.dueDate}</span>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button 
-                    onClick={() => startEdit(todo)}
-                    className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors"
+                    onClick={() => toggleTodo(todo.id)}
+                    className={`flex-shrink-0 transition-colors ${todo.completed ? 'text-emerald-500' : 'text-slate-300 hover:text-indigo-400'}`}
                   >
-                    <Edit2 className="w-4 h-4" />
+                    {todo.completed ? <CheckCircle2 className="w-6 h-6" /> : <Circle className="w-6 h-6" />}
                   </button>
-                  <button 
-                    onClick={() => deleteTodo(todo.id)}
-                    className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
 
-          {filteredTodos.length === 0 && (
+                  <div className="flex-grow min-w-0">
+                    {editingId === todo.id ? (
+                      <div className="flex items-center gap-2">
+                        <input 
+                          autoFocus
+                          type="text"
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        />
+                        <button onClick={saveEdit} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded">
+                          <Check className="w-5 h-5" />
+                        </button>
+                        <button onClick={() => setEditingId(null)} className="p-1 text-slate-400 hover:bg-slate-100 rounded">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <p className={`text-base font-medium truncate ${todo.completed ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
+                          {todo.text}
+                        </p>
+                        {todo.dueDate && (
+                          <div className="flex items-center gap-1 mt-1 text-xs text-slate-400">
+                            <Calendar className="w-3 h-3" />
+                            <span>{todo.dueDate}</span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={() => startEdit(todo)}
+                      className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button 
+                      onClick={() => deleteTodo(todo.id)}
+                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          )}
+
+          {!isLoading && filteredTodos.length === 0 && (
             <div className="text-center py-12">
               <div className="bg-slate-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
                 <AlertCircle className="w-8 h-8 text-slate-400" />
